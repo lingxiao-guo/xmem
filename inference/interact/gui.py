@@ -13,6 +13,7 @@ but with XMem as the backbone and is more memory (for both CPU and GPU) friendly
 """
 
 import functools
+import json
 
 import os
 import cv2
@@ -88,6 +89,8 @@ class App(QWidget):
 
         self.reset_button = QPushButton('Reset Frame')
         self.reset_button.clicked.connect(self.on_reset_mask)
+        self.reset_object_button = QPushButton('Clear Object')
+        self.reset_object_button.clicked.connect(self.on_reset_object)
 
         # LCD
         self.lcd = QTextEdit()
@@ -128,11 +131,71 @@ class App(QWidget):
         self.brush_slider.setTickInterval(2)
         self.brush_slider.setMinimumWidth(300)
 
+        # reconstruction time controls
+        self.recon_segment = QSpinBox()
+        self.recon_segment.setMaximumHeight(28)
+        self.recon_segment.setMaximumWidth(60)
+        self.recon_segment.setMinimum(1)
+        self.recon_segment.setMaximum(9999)
+        self.recon_segment.valueChanged.connect(self.on_recon_segment_change)
+
+        self.recon_start = QSpinBox()
+        self.recon_start.setMaximumHeight(28)
+        self.recon_start.setMaximumWidth(80)
+        self.recon_start.setMinimum(0)
+        self.recon_start.setMaximum(self.num_frames-1)
+        self.recon_start.valueChanged.connect(self.on_recon_time_change)
+        self.recon_start.editingFinished.connect(self.on_recon_time_commit)
+
+        self.recon_end = QSpinBox()
+        self.recon_end.setMaximumHeight(28)
+        self.recon_end.setMaximumWidth(80)
+        self.recon_end.setMinimum(0)
+        self.recon_end.setMaximum(self.num_frames-1)
+        self.recon_end.valueChanged.connect(self.on_recon_time_change)
+        self.recon_end.editingFinished.connect(self.on_recon_time_commit)
+
+        self.recon_button = QPushButton('Reconstruction Time')
+        self.recon_button.clicked.connect(self.on_recon_time_save)
+        self.recon_add_button = QPushButton('New Segment')
+        self.recon_add_button.clicked.connect(self.on_recon_segment_new)
+
+        # scene reconstruction time controls
+        self.scene_segment = QSpinBox()
+        self.scene_segment.setMaximumHeight(28)
+        self.scene_segment.setMaximumWidth(60)
+        self.scene_segment.setMinimum(1)
+        self.scene_segment.setMaximum(9999)
+        self.scene_segment.valueChanged.connect(self.on_scene_segment_change)
+
+        self.scene_start = QSpinBox()
+        self.scene_start.setMaximumHeight(28)
+        self.scene_start.setMaximumWidth(80)
+        self.scene_start.setMinimum(0)
+        self.scene_start.setMaximum(self.num_frames-1)
+        self.scene_start.valueChanged.connect(self.on_scene_time_change)
+        self.scene_start.editingFinished.connect(self.on_scene_time_commit)
+
+        self.scene_end = QSpinBox()
+        self.scene_end.setMaximumHeight(28)
+        self.scene_end.setMaximumWidth(80)
+        self.scene_end.setMinimum(0)
+        self.scene_end.setMaximum(self.num_frames-1)
+        self.scene_end.valueChanged.connect(self.on_scene_time_change)
+        self.scene_end.editingFinished.connect(self.on_scene_time_commit)
+
+        self.scene_button = QPushButton('Scene Reconstruction Time')
+        self.scene_button.clicked.connect(self.on_scene_time_save)
+        self.scene_add_button = QPushButton('New Scene Segment')
+        self.scene_add_button.clicked.connect(self.on_scene_segment_new)
+
         # combobox
         self.combo = QComboBox(self)
         self.combo.addItem("davis")
         self.combo.addItem("fade")
         self.combo.addItem("light")
+        self.combo.addItem("white")
+        self.combo.addItem("green_screen")
         self.combo.addItem("popup")
         self.combo.addItem("layered")
         self.combo.currentTextChanged.connect(self.set_viz_mode)
@@ -228,6 +291,8 @@ class App(QWidget):
         interact_subbox = QVBoxLayout()
         interact_topbox = QHBoxLayout()
         interact_botbox = QHBoxLayout()
+        interact_recon_box = QHBoxLayout()
+        interact_scene_box = QHBoxLayout()
         interact_topbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
         interact_topbox.addWidget(self.lcd)
         interact_topbox.addWidget(self.play_button)
@@ -235,12 +300,31 @@ class App(QWidget):
         interact_topbox.addWidget(self.radio_fbrs)
         interact_topbox.addWidget(self.radio_free)
         interact_topbox.addWidget(self.reset_button)
+        interact_topbox.addWidget(self.reset_object_button)
         interact_botbox.addWidget(QLabel('Current Object ID:'))
         interact_botbox.addWidget(self.object_dial)
         interact_botbox.addWidget(self.brush_label)
         interact_botbox.addWidget(self.brush_slider)
+        interact_recon_box.addWidget(QLabel('Segment:'))
+        interact_recon_box.addWidget(self.recon_segment)
+        interact_recon_box.addWidget(QLabel('Recon start:'))
+        interact_recon_box.addWidget(self.recon_start)
+        interact_recon_box.addWidget(QLabel('Recon end:'))
+        interact_recon_box.addWidget(self.recon_end)
+        interact_recon_box.addWidget(self.recon_button)
+        interact_recon_box.addWidget(self.recon_add_button)
+        interact_scene_box.addWidget(QLabel('Scene segment:'))
+        interact_scene_box.addWidget(self.scene_segment)
+        interact_scene_box.addWidget(QLabel('Scene start:'))
+        interact_scene_box.addWidget(self.scene_start)
+        interact_scene_box.addWidget(QLabel('Scene end:'))
+        interact_scene_box.addWidget(self.scene_end)
+        interact_scene_box.addWidget(self.scene_button)
+        interact_scene_box.addWidget(self.scene_add_button)
         interact_subbox.addLayout(interact_topbox)
         interact_subbox.addLayout(interact_botbox)
+        interact_subbox.addLayout(interact_recon_box)
+        interact_subbox.addLayout(interact_scene_box)
         navi.addLayout(interact_subbox)
 
         apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, 
@@ -377,6 +461,8 @@ class App(QWidget):
         # try to load the default overlay
         self._try_load_layer('./docs/ECCV-logo.png')
 
+        self._init_recon_times()
+        self._init_scene_times()
         self.load_current_image_mask()
         self.show_current_frame()
         self.show()
@@ -686,7 +772,7 @@ class App(QWidget):
             frame = cv2.imread(os.path.join(image_folder, images[0]))
             height, width, layers = frame.shape
             # 10 is the FPS -- change if needed
-            video = cv2.VideoWriter(f"{save_folder}/visualization.mp4", cv2.VideoWriter_fourcc(*'mp4v'), 10, (width,height))
+            video = cv2.VideoWriter(f"{save_folder}/visualization.mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width,height))
             for image in images:
                 video.write(cv2.imread(os.path.join(image_folder, image)))
             video.release()
@@ -706,6 +792,17 @@ class App(QWidget):
         self.save_current_mask()
         self.reset_this_interaction()
         self.show_current_frame()
+
+    def on_reset_object(self):
+        if self.current_object < 1 or self.current_object > self.num_objects:
+            return
+        self.current_mask[self.current_mask == self.current_object] = 0
+        self.current_prob = None
+        self.curr_frame_dirty = True
+        self.save_current_mask()
+        self.reset_this_interaction()
+        self.show_current_frame()
+        self.console_push_text(f'Cleared object {self.current_object} on current frame.')
 
     def on_zoom_plus(self):
         self.zoom_pixels -= 25
@@ -731,6 +828,7 @@ class App(QWidget):
             return
         self.current_object = number
         self.object_dial.setValue(number)
+        self._sync_recon_controls()
         if self.fbrs_controller is not None:
             self.fbrs_controller.unanchor()
         self.console_push_text(f'Current object changed to {number}.')
@@ -937,6 +1035,379 @@ class App(QWidget):
         options = QFileDialog.Options()
         file_name, _ = QFileDialog.getOpenFileName(self, prompt, "", "Image files (*)", options=options)
         return file_name
+
+    def _init_recon_times(self):
+        self.frame_id_width = self._compute_frame_id_width()
+        self.recon_segments = {
+            obj_id: {
+                1: {
+                    'start': 0,
+                    'end': self.num_frames-1,
+                }
+            }
+            for obj_id in range(1, self.num_objects+1)
+        }
+        self.current_segment_per_object = {
+            obj_id: 1 for obj_id in range(1, self.num_objects+1)
+        }
+        self._load_recon_times()
+        self._sync_recon_controls()
+
+    def _compute_frame_id_width(self):
+        if all(name.isdigit() for name in self.res_man.names):
+            return max(len(name) for name in self.res_man.names)
+        return 6
+
+    def _frame_id_str(self, index):
+        return f'{index:0{self.frame_id_width}d}'
+
+    def _recon_json_path(self):
+        return os.path.join(self.config['workspace'], 'object.json')
+
+    def _scene_json_path(self):
+        return os.path.join(self.config['workspace'], 'scene.json')
+
+    def _parse_frame_id(self, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return None
+
+    def _load_recon_times(self):
+        recon_path = self._recon_json_path()
+        if not os.path.exists(recon_path):
+            return
+        try:
+            with open(recon_path, 'r', encoding='utf-8') as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            self.console_push_text(f'Failed to load {recon_path}: {exc}')
+            return
+
+        if isinstance(payload, dict) and isinstance(payload.get('objects'), list):
+            entries = payload.get('objects', [])
+        elif isinstance(payload, list):
+            entries = payload
+        else:
+            return
+
+        for entry in entries:
+            try:
+                obj_id = int(entry.get('object id'))
+            except Exception:
+                continue
+            if obj_id not in self.recon_segments:
+                continue
+
+            segments_data = entry.get('segments')
+            segments = {}
+            if isinstance(segments_data, list) and segments_data:
+                for idx, segment in enumerate(segments_data, start=1):
+                    seg_id = segment.get('segment id', idx)
+                    if isinstance(seg_id, str) and seg_id.isdigit():
+                        seg_id = int(seg_id)
+                    if not isinstance(seg_id, int):
+                        continue
+
+                    start_id = segment.get('start id')
+                    end_id = segment.get('end id')
+                    start_index = self._parse_frame_id(start_id)
+                    end_index = self._parse_frame_id(end_id)
+                    if start_index is None or end_index is None:
+                        continue
+                    segments[seg_id] = {
+                        'start': min(max(start_index, 0), self.num_frames-1),
+                        'end': min(max(end_index, 0), self.num_frames-1),
+                    }
+            else:
+                start_id = entry.get('start id')
+                end_id = entry.get('end id')
+                start_index = self._parse_frame_id(start_id)
+                end_index = self._parse_frame_id(end_id)
+                if start_index is None or end_index is None:
+                    continue
+                segments[1] = {
+                    'start': min(max(start_index, 0), self.num_frames-1),
+                    'end': min(max(end_index, 0), self.num_frames-1),
+                }
+
+            if segments:
+                self.recon_segments[obj_id] = segments
+                self.current_segment_per_object[obj_id] = sorted(segments.keys())[0]
+
+    def _init_scene_times(self):
+        self.scene_segments = {
+            1: {
+                'start': 0,
+                'end': self.num_frames-1,
+            }
+        }
+        self.current_scene_segment = 1
+        self._load_scene_times()
+        self._sync_scene_controls()
+
+    def _load_scene_times(self):
+        scene_path = self._scene_json_path()
+        if not os.path.exists(scene_path):
+            return
+        try:
+            with open(scene_path, 'r', encoding='utf-8') as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            self.console_push_text(f'Failed to load {scene_path}: {exc}')
+            return
+
+        segments_data = None
+        if isinstance(payload, dict):
+            segments_data = payload.get('segments')
+        elif isinstance(payload, list):
+            segments_data = payload
+
+        segments = {}
+        if isinstance(segments_data, list) and segments_data:
+            for idx, segment in enumerate(segments_data, start=1):
+                seg_id = segment.get('segment id', idx)
+                if isinstance(seg_id, str) and seg_id.isdigit():
+                    seg_id = int(seg_id)
+                if not isinstance(seg_id, int):
+                    continue
+                start_index = self._parse_frame_id(segment.get('start id'))
+                end_index = self._parse_frame_id(segment.get('end id'))
+                if start_index is None or end_index is None:
+                    continue
+                segments[seg_id] = {
+                    'start': min(max(start_index, 0), self.num_frames-1),
+                    'end': min(max(end_index, 0), self.num_frames-1),
+                }
+
+        if segments:
+            self.scene_segments = segments
+            self.current_scene_segment = sorted(segments.keys())[0]
+
+    def _ensure_scene_segment(self, segment_id):
+        if segment_id not in self.scene_segments:
+            self.scene_segments[segment_id] = {
+                'start': self.cursur,
+                'end': self.cursur,
+            }
+
+    def _sync_scene_controls(self):
+        seg_id = self.current_scene_segment
+        if seg_id not in self.scene_segments and self.scene_segments:
+            seg_id = sorted(self.scene_segments.keys())[0]
+            self.current_scene_segment = seg_id
+        self._ensure_scene_segment(seg_id)
+        recon = self.scene_segments[seg_id]
+        self.scene_segment.blockSignals(True)
+        self.scene_start.blockSignals(True)
+        self.scene_end.blockSignals(True)
+        self.scene_segment.setValue(seg_id)
+        self.scene_start.setValue(recon['start'])
+        self.scene_end.setValue(recon['end'])
+        self.scene_segment.blockSignals(False)
+        self.scene_start.blockSignals(False)
+        self.scene_end.blockSignals(False)
+
+    def _write_scene_times(self):
+        segments = []
+        for seg_id in sorted(self.scene_segments.keys()):
+            recon = self.scene_segments[seg_id]
+            segments.append({
+                'segment id': seg_id,
+                'start id': self._frame_id_str(recon['start']),
+                'end id': self._frame_id_str(recon['end']),
+            })
+
+        payload = {'segments': segments}
+        scene_path = self._scene_json_path()
+        try:
+            with open(scene_path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, indent=2)
+            self.console_push_text(f'Scene reconstruction time saved to {scene_path}')
+        except Exception as exc:
+            self.console_push_text(f'Failed to write {scene_path}: {exc}')
+
+    def _ensure_segment(self, obj_id, segment_id):
+        segments = self.recon_segments.setdefault(obj_id, {})
+        if segment_id not in segments:
+            segments[segment_id] = {
+                'start': self.cursur,
+                'end': self.cursur,
+            }
+
+    def _sync_recon_controls(self):
+        obj_id = self.current_object
+        seg_id = self.current_segment_per_object.get(obj_id, 1)
+        segments = self.recon_segments.get(obj_id, {})
+        if seg_id not in segments and segments:
+            seg_id = sorted(segments.keys())[0]
+            self.current_segment_per_object[obj_id] = seg_id
+
+        self._ensure_segment(obj_id, seg_id)
+        recon = self.recon_segments[obj_id][seg_id]
+        self.recon_segment.blockSignals(True)
+        self.recon_start.blockSignals(True)
+        self.recon_end.blockSignals(True)
+        self.recon_segment.setValue(seg_id)
+        self.recon_start.setValue(recon['start'])
+        self.recon_end.setValue(recon['end'])
+        self.recon_segment.blockSignals(False)
+        self.recon_start.blockSignals(False)
+        self.recon_end.blockSignals(False)
+
+    def _write_recon_times(self):
+        objects = []
+        for obj_id in range(1, self.num_objects+1):
+            segments = self.recon_segments.get(obj_id)
+            if not segments:
+                continue
+            segment_entries = []
+            for seg_id in sorted(segments.keys()):
+                recon = segments[seg_id]
+                segment_entries.append({
+                    'segment id': seg_id,
+                    'start id': self._frame_id_str(recon['start']),
+                    'end id': self._frame_id_str(recon['end']),
+                })
+            objects.append({
+                'object id': obj_id,
+                'segments': segment_entries,
+            })
+
+        payload = {'objects': objects}
+        recon_path = self._recon_json_path()
+        try:
+            with open(recon_path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, indent=2)
+            self.console_push_text(f'Reconstruction time saved to {recon_path}')
+        except Exception as exc:
+            self.console_push_text(f'Failed to write {recon_path}: {exc}')
+
+    def on_recon_time_change(self, *_):
+        if not hasattr(self, 'recon_segments'):
+            return
+        obj_id = self.current_object
+        seg_id = self.recon_segment.value()
+        self._ensure_segment(obj_id, seg_id)
+        start_index = self.recon_start.value()
+        end_index = self.recon_end.value()
+        if end_index < start_index:
+            if self.recon_end.hasFocus():
+                return
+            end_index = start_index
+            self.recon_end.setValue(end_index)
+        self.recon_segments[obj_id][seg_id] = {
+            'start': start_index,
+            'end': end_index,
+        }
+        self._write_recon_times()
+
+    def on_recon_time_save(self):
+        self.on_recon_time_commit()
+
+    def on_recon_time_commit(self):
+        if not hasattr(self, 'recon_segments'):
+            return
+        obj_id = self.current_object
+        seg_id = self.recon_segment.value()
+        self._ensure_segment(obj_id, seg_id)
+        start_index = self.recon_start.value()
+        end_index = self.recon_end.value()
+        if end_index < start_index:
+            end_index = start_index
+            self.recon_end.setValue(end_index)
+        self.recon_segments[obj_id][seg_id] = {
+            'start': start_index,
+            'end': end_index,
+        }
+        self._write_recon_times()
+
+    def on_recon_segment_change(self, *_):
+        if not hasattr(self, 'recon_segments'):
+            return
+        obj_id = self.current_object
+        seg_id = self.recon_segment.value()
+        self.current_segment_per_object[obj_id] = seg_id
+        created = seg_id not in self.recon_segments.get(obj_id, {})
+        self._ensure_segment(obj_id, seg_id)
+        self._sync_recon_controls()
+        if created:
+            self._write_recon_times()
+
+    def on_recon_segment_new(self):
+        if not hasattr(self, 'recon_segments'):
+            return
+        obj_id = self.current_object
+        segments = self.recon_segments.get(obj_id, {})
+        next_seg_id = max(segments.keys(), default=0) + 1
+        self.current_segment_per_object[obj_id] = next_seg_id
+        self.recon_segments[obj_id][next_seg_id] = {
+            'start': self.cursur,
+            'end': self.cursur,
+        }
+        self._sync_recon_controls()
+        self._write_recon_times()
+
+    def on_scene_time_change(self, *_):
+        if not hasattr(self, 'scene_segments'):
+            return
+        seg_id = self.scene_segment.value()
+        self._ensure_scene_segment(seg_id)
+        start_index = self.scene_start.value()
+        end_index = self.scene_end.value()
+        if end_index < start_index:
+            if self.scene_end.hasFocus():
+                return
+            end_index = start_index
+            self.scene_end.setValue(end_index)
+        self.scene_segments[seg_id] = {
+            'start': start_index,
+            'end': end_index,
+        }
+        self._write_scene_times()
+
+    def on_scene_time_commit(self):
+        if not hasattr(self, 'scene_segments'):
+            return
+        seg_id = self.scene_segment.value()
+        self._ensure_scene_segment(seg_id)
+        start_index = self.scene_start.value()
+        end_index = self.scene_end.value()
+        if end_index < start_index:
+            end_index = start_index
+            self.scene_end.setValue(end_index)
+        self.scene_segments[seg_id] = {
+            'start': start_index,
+            'end': end_index,
+        }
+        self._write_scene_times()
+
+    def on_scene_time_save(self):
+        self.on_scene_time_commit()
+
+    def on_scene_segment_change(self, *_):
+        if not hasattr(self, 'scene_segments'):
+            return
+        seg_id = self.scene_segment.value()
+        created = seg_id not in self.scene_segments
+        self.current_scene_segment = seg_id
+        self._ensure_scene_segment(seg_id)
+        self._sync_scene_controls()
+        if created:
+            self._write_scene_times()
+
+    def on_scene_segment_new(self):
+        if not hasattr(self, 'scene_segments'):
+            return
+        next_seg_id = max(self.scene_segments.keys(), default=0) + 1
+        self.current_scene_segment = next_seg_id
+        self.scene_segments[next_seg_id] = {
+            'start': self.cursur,
+            'end': self.cursur,
+        }
+        self._sync_scene_controls()
+        self._write_scene_times()
 
     def on_import_mask(self):
         file_name = self._open_file('Mask')

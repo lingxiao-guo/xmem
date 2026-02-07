@@ -88,10 +88,13 @@ class ResourceManager:
         if need_resizing:
             self._copy_resize_frames(images)
 
-        # read all frame names
-        self.names = sorted(os.listdir(self.image_dir))
-        self.names = [f[:-4] for f in self.names] # remove extensions
-        self.length = len(self.names)
+        # read all frame names (keep full filenames for loading)
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+        self.image_files = sorted(
+            f for f in os.listdir(self.image_dir) if path.splitext(f)[1].lower() in image_exts
+        )
+        self.names = [path.splitext(f)[0] for f in self.image_files]  # base names for masks/visualizations
+        self.length = len(self.image_files)
 
         assert self.length > 0, f'No images found! Check {self.workspace}/images. Remove folder if necessary.'
 
@@ -164,7 +167,7 @@ class ResourceManager:
         # returns H*W*3 uint8 array
         assert 0 <= ti < self.length
 
-        image = Image.open(path.join(self.image_dir, self.names[ti]+'.jpg'))
+        image = Image.open(path.join(self.image_dir, self.image_files[ti]))
         image = np.array(image)
         return image
 

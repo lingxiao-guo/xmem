@@ -1,0 +1,24 @@
+{
+  "segments": [
+    {
+      "segment id": 1,
+      "start id": "000000",
+      "end id": "000267"
+    },
+    {
+      "segment id": 2,
+      "start id": "000913",
+      "end id": "001939"
+    },
+    {
+      "segment id": 3,
+      "start id": "003336",
+      "end id": "004186"
+    },
+    {
+      "segment id": 4,
+      "start id": "005420",
+      "end id": "005722"
+    }
+  ]
+}

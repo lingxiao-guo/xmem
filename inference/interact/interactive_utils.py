@@ -39,19 +39,89 @@ except:
 color_map_np = np.frombuffer(davis_palette, dtype=np.uint8).reshape(-1, 3).copy()
 # scales for better visualization
 color_map_np = (color_map_np.astype(np.float32)*1.5).clip(0, 255).astype(np.uint8)
+color_map_np[1] = np.array([200, 120, 200], dtype=np.uint8)
 color_map = color_map_np.tolist()
 color_map_torch = torch.from_numpy(color_map_np).to(device) / 255
 
 grayscale_weights = np.array([[0.3,0.59,0.11]]).astype(np.float32)
 grayscale_weights_torch = torch.from_numpy(grayscale_weights).to(device).unsqueeze(0)
+boundary_color_np = np.array([140, 80, 140], dtype=np.uint8)
+boundary_color_torch = torch.tensor([140, 80, 140], device=device) / 255
+boundary_width = 3
+
+def _dilate_mask_numpy(binary_mask, iterations=1):
+    out = binary_mask
+    for _ in range(iterations):
+        up = np.pad(out[1:, :], ((0, 1), (0, 0)), mode='constant', constant_values=False)
+        down = np.pad(out[:-1, :], ((1, 0), (0, 0)), mode='constant', constant_values=False)
+        left = np.pad(out[:, 1:], ((0, 0), (0, 1)), mode='constant', constant_values=False)
+        right = np.pad(out[:, :-1], ((0, 0), (1, 0)), mode='constant', constant_values=False)
+        up_left = np.pad(out[1:, 1:], ((0, 1), (0, 1)), mode='constant', constant_values=False)
+        up_right = np.pad(out[1:, :-1], ((0, 1), (1, 0)), mode='constant', constant_values=False)
+        down_left = np.pad(out[:-1, 1:], ((1, 0), (0, 1)), mode='constant', constant_values=False)
+        down_right = np.pad(out[:-1, :-1], ((1, 0), (1, 0)), mode='constant', constant_values=False)
+        out = out | up | down | left | right | up_left | up_right | down_left | down_right
+    return out
+
+def _mask_boundary_numpy(binary_mask, width=1):
+    up = np.pad(binary_mask[1:, :], ((0, 1), (0, 0)), mode='constant', constant_values=False)
+    down = np.pad(binary_mask[:-1, :], ((1, 0), (0, 0)), mode='constant', constant_values=False)
+    left = np.pad(binary_mask[:, 1:], ((0, 0), (0, 1)), mode='constant', constant_values=False)
+    right = np.pad(binary_mask[:, :-1], ((0, 0), (1, 0)), mode='constant', constant_values=False)
+    eroded = binary_mask & up & down & left & right
+    boundary = binary_mask & ~eroded
+    if width <= 1:
+        return boundary
+    return _dilate_mask_numpy(boundary, iterations=width-1)
+
+def _dilate_mask_torch(binary_mask, iterations=1):
+    out = binary_mask
+    for _ in range(iterations):
+        up = torch.zeros_like(out)
+        down = torch.zeros_like(out)
+        left = torch.zeros_like(out)
+        right = torch.zeros_like(out)
+        up_left = torch.zeros_like(out)
+        up_right = torch.zeros_like(out)
+        down_left = torch.zeros_like(out)
+        down_right = torch.zeros_like(out)
+        up[:-1, :] = out[1:, :]
+        down[1:, :] = out[:-1, :]
+        left[:, :-1] = out[:, 1:]
+        right[:, 1:] = out[:, :-1]
+        up_left[:-1, :-1] = out[1:, 1:]
+        up_right[:-1, 1:] = out[1:, :-1]
+        down_left[1:, :-1] = out[:-1, 1:]
+        down_right[1:, 1:] = out[:-1, :-1]
+        out = out | up | down | left | right | up_left | up_right | down_left | down_right
+    return out
+
+def _mask_boundary_torch(binary_mask, width=1):
+    up = torch.zeros_like(binary_mask)
+    down = torch.zeros_like(binary_mask)
+    left = torch.zeros_like(binary_mask)
+    right = torch.zeros_like(binary_mask)
+    up[:-1, :] = binary_mask[1:, :]
+    down[1:, :] = binary_mask[:-1, :]
+    left[:, :-1] = binary_mask[:, 1:]
+    right[:, 1:] = binary_mask[:, :-1]
+    eroded = binary_mask & up & down & left & right
+    boundary = binary_mask & ~eroded
+    if width <= 1:
+        return boundary
+    return _dilate_mask_torch(boundary, iterations=width-1)
 
 def get_visualization(mode, image, mask, layer, target_object):
     if mode == 'fade':
         return overlay_davis(image, mask, fade=True)
     elif mode == 'davis':
-        return overlay_davis(image, mask)
+        return overlay_davis(image, mask, draw_boundary=True)
     elif mode == 'light':
         return overlay_davis(image, mask, 0.9)
+    elif mode == 'white':
+        return overlay_white(image, mask)
+    elif mode == 'green_screen':
+        return overlay_green_screen(image, mask)
     elif mode == 'popup':
         return overlay_popup(image, mask, target_object)
     elif mode == 'layered':
@@ -67,9 +137,13 @@ def get_visualization_torch(mode, image, prob, layer, target_object):
     if mode == 'fade':
         return overlay_davis_torch(image, prob, fade=True)
     elif mode == 'davis':
-        return overlay_davis_torch(image, prob)
+        return overlay_davis_torch(image, prob, draw_boundary=True)
     elif mode == 'light':
         return overlay_davis_torch(image, prob, 0.9)
+    elif mode == 'white':
+        return overlay_white_torch(image, prob)
+    elif mode == 'green_screen':
+        return overlay_green_screen_torch(image, prob)
     elif mode == 'popup':
         return overlay_popup_torch(image, prob, target_object)
     elif mode == 'layered':
@@ -81,7 +155,7 @@ def get_visualization_torch(mode, image, prob, layer, target_object):
     else:
         raise NotImplementedError
 
-def overlay_davis(image, mask, alpha=0.5, fade=False):
+def overlay_davis(image, mask, alpha=0.5, fade=False, draw_boundary=False):
     """ Overlay segmentation on top of RGB image. from davis official"""
     im_overlay = image.copy()
 
@@ -90,8 +164,25 @@ def overlay_davis(image, mask, alpha=0.5, fade=False):
     binary_mask = (mask > 0)
     # Compose image
     im_overlay[binary_mask] = foreground[binary_mask]
+    if draw_boundary:
+        boundary_mask = _mask_boundary_numpy(binary_mask, width=boundary_width)
+        im_overlay[boundary_mask] = boundary_color_np.astype(image.dtype)
     if fade:
         im_overlay[~binary_mask] = im_overlay[~binary_mask] * 0.6
+    return im_overlay.astype(image.dtype)
+
+def overlay_white(image, mask):
+    """ Overlay segmentation as solid white on top of the RGB image. """
+    im_overlay = image.copy()
+    binary_mask = (mask > 0)
+    im_overlay[binary_mask] = np.array([255, 255, 255], dtype=image.dtype)
+    return im_overlay.astype(image.dtype)
+
+def overlay_green_screen(image, mask):
+    """ Overlay segmentation as solid green on top of the RGB image. """
+    im_overlay = image.copy()
+    binary_mask = (mask > 0)
+    im_overlay[binary_mask] = np.array([0, 255, 0], dtype=image.dtype)
     return im_overlay.astype(image.dtype)
 
 def overlay_popup(image, mask, target_object):
@@ -115,7 +206,7 @@ def overlay_layer(image, mask, layer, target_object):
                   image * obj_mask).clip(0, 255)
     return im_overlay.astype(image.dtype)
 
-def overlay_davis_torch(image, mask, alpha=0.5, fade=False):
+def overlay_davis_torch(image, mask, alpha=0.5, fade=False, draw_boundary=False):
     """ Overlay segmentation on top of RGB image. from davis official"""
     # Changes the image in-place to avoid copying
     image = image.permute(1, 2, 0)
@@ -127,10 +218,28 @@ def overlay_davis_torch(image, mask, alpha=0.5, fade=False):
     binary_mask = (mask > 0)
     # Compose image
     im_overlay[binary_mask] = foreground[binary_mask]
+    if draw_boundary:
+        boundary_mask = _mask_boundary_torch(binary_mask, width=boundary_width)
+        im_overlay[boundary_mask] = boundary_color_torch.to(device=image.device, dtype=image.dtype)
     if fade:
         im_overlay[~binary_mask] = im_overlay[~binary_mask] * 0.6
 
     im_overlay = (im_overlay*255).cpu().numpy()
+    im_overlay = im_overlay.astype(np.uint8)
+
+    return im_overlay
+
+def overlay_white_torch(image, mask):
+    """ Overlay segmentation as solid white on top of the RGB image. """
+    # Changes the image in-place to avoid copying
+    image = image.permute(1, 2, 0)
+    im_overlay = image
+    mask = torch.max(mask, dim=0).indices
+
+    binary_mask = (mask > 0)
+    im_overlay[binary_mask] = 1.0
+
+    im_overlay = (im_overlay * 255).cpu().numpy()
     im_overlay = im_overlay.astype(np.uint8)
 
     return im_overlay
@@ -156,6 +265,21 @@ def overlay_popup_torch(image, mask, target_object):
 
     return im_overlay
 
+def overlay_green_screen_torch(image, mask):
+    """ Overlay segmentation as solid green on top of the RGB image. """
+    # Changes the image in-place to avoid copying
+    image = image.permute(1, 2, 0)
+    im_overlay = image
+    mask = torch.max(mask, dim=0).indices
+
+    binary_mask = (mask > 0)
+    im_overlay[binary_mask] = torch.tensor([0.0, 1.0, 0.0], device=image.device, dtype=image.dtype)
+
+    im_overlay = (im_overlay * 255).cpu().numpy()
+    im_overlay = im_overlay.astype(np.uint8)
+
+    return im_overlay
+
 def overlay_layer_torch(image, prob, layer, target_object):
     # insert a layer between foreground and background
     # The CPU version is less accurate because we are using the hard mask
@@ -177,4 +301,3 @@ def overlay_layer_torch(image, prob, layer, target_object):
     im_overlay = im_overlay.astype(np.uint8)
 
     return im_overlay
-

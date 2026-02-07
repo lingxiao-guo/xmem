@@ -1,0 +1,34 @@
+{
+  "objects": [
+    {
+      "object id": 1,
+      "segments": [
+        {
+          "segment id": 1,
+          "start id": "000086",
+          "end id": "001620"
+        },
+        {
+          "segment id": 2,
+          "start id": "002936",
+          "end id": "002956"
+        },
+        {
+          "segment id": 3,
+          "start id": "003042",
+          "end id": "003062"
+        },
+        {
+          "segment id": 4,
+          "start id": "003361",
+          "end id": "003401"
+        },
+        {
+          "segment id": 5,
+          "start id": "004289",
+          "end id": "004775"
+        }
+      ]
+    }
+  ]
+}

@@ -4,6 +4,9 @@ saves/
 output/
 .vscode/
 workspace/
+/example/
+/images/
+/masks/
 run*.sh
 .DS_Store
 
