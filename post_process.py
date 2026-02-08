@@ -144,7 +144,7 @@ def build_index_map(dir_path: str) -> Dict[int, str]:
         index_map[int(stem)] = name
     return index_map
 
-
+ 
 def ensure_dirs(base_dir: str) -> Dict[str, str]:
     images_out = os.path.join(base_dir, "rgb")
     masks_out = os.path.join(base_dir, "masks")
