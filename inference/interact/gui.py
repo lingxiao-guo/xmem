@@ -106,6 +106,7 @@ class App(QWidget):
         self.object_dial.setMaximumWidth(56)
         self.object_dial.setMinimum(1)
         self.object_dial.setMaximum(self.num_objects)
+        self.object_dial.valueChanged.connect(self.on_object_dial_change)
         self.object_dial.editingFinished.connect(self.on_object_dial_change)
 
         # timeline slider
@@ -780,8 +781,9 @@ class App(QWidget):
         else:
             self.console_push_text(f'No visualization images found in {image_folder}')
 
-    def on_object_dial_change(self):
-        object_id = self.object_dial.value()
+    def on_object_dial_change(self, object_id=None):
+        if object_id is None:
+            object_id = self.object_dial.value()
         self.hit_number_key(object_id)
 
     def on_reset_mask(self):
@@ -848,6 +850,10 @@ class App(QWidget):
                 (int(round(ex)), int(round(ey))), self.brush_size//2+1, 0.5, thickness=-1)
 
     def on_mouse_press(self, event):
+        # Make sure the object used for interaction always matches the current UI value.
+        if self.object_dial.value() != self.current_object:
+            self.hit_number_key(self.object_dial.value())
+
         if self.is_pos_out_of_bound(event.position().x(), event.position().y()):
             return
 
