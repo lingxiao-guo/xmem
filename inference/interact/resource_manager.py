@@ -35,6 +35,9 @@ class LRU:
     def invalidate(self, key):
         self.cache.pop(key, None)
 
+    def clear(self):
+        self.cache.clear()
+
 
 class ResourceManager:
     def __init__(self, config):
@@ -42,6 +45,9 @@ class ResourceManager:
         images = config['images']
         video = config['video']
         self.workspace = config['workspace']
+        self.mask_dir = config.get('mask_dir')
+        self.prefer_input_images = config.get('prefer_input_images', False)
+        self.reset_workspace_masks = config.get('reset_workspace_masks', False)
         self.size = config['size']
         self.palette = davis_palette
 
@@ -62,23 +68,32 @@ class ResourceManager:
         # determine the location of input images
         need_decoding = False
         need_resizing = False
-        if path.exists(path.join(self.workspace, 'images')):
-            pass
-        elif images is not None:
-            need_resizing = True
-        elif video is not None:
-            # will decode video into frames later
-            need_decoding = True
+        direct_image_input = bool(images is not None and self.prefer_input_images and self.size < 0)
 
-        # create workspace subdirectories
-        self.image_dir = path.join(self.workspace, 'images')
-        self.mask_dir = path.join(self.workspace, 'masks')
-        os.makedirs(self.image_dir, exist_ok=True)
+        if direct_image_input:
+            self.image_dir = images
+        else:
+            self.image_dir = path.join(self.workspace, 'images')
+            if images is not None:
+                # explicit --images should override stale workspace/images.
+                need_resizing = True
+            elif path.exists(path.join(self.workspace, 'images')):
+                pass
+            elif video is not None:
+                # will decode video into frames later
+                need_decoding = True
+            os.makedirs(self.image_dir, exist_ok=True)
+
+        if self.mask_dir is None:
+            self.mask_dir = path.join(self.workspace, 'masks')
         os.makedirs(self.mask_dir, exist_ok=True)
 
         # convert read functions to be buffered
         self.get_image = LRU(self._get_image_unbuffered, maxsize=config['buffer_size'])
         self.get_mask = LRU(self._get_mask_unbuffered, maxsize=config['buffer_size'])
+
+        if self.reset_workspace_masks:
+            self.clear_all_masks()
 
         # extract frames from video
         if need_decoding:
@@ -86,6 +101,7 @@ class ResourceManager:
 
         # copy/resize existing images to the workspace
         if need_resizing:
+            self._clear_cached_images()
             self._copy_resize_frames(images)
 
         # read all frame names (keep full filenames for loading)
@@ -102,6 +118,16 @@ class ResourceManager:
 
         self.height, self.width = self.get_image(0).shape[:2]
         self.visualization_init = False
+
+    def _clear_cached_images(self):
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+        for name in os.listdir(self.image_dir):
+            ext = path.splitext(name)[1].lower()
+            if ext not in image_exts:
+                continue
+            image_path = path.join(self.image_dir, name)
+            if path.isfile(image_path):
+                os.remove(image_path)
 
     def _extract_frames(self, video):
         cap = cv2.VideoCapture(video)
@@ -196,6 +222,15 @@ class ResourceManager:
     def invalidate(self, ti):
         # the image buffer is never invalidated
         self.get_mask.invalidate((ti,))
+
+    def clear_all_masks(self):
+        for name in os.listdir(self.mask_dir):
+            if not name.lower().endswith('.png'):
+                continue
+            mask_path = path.join(self.mask_dir, name)
+            if path.isfile(mask_path):
+                os.remove(mask_path)
+        self.get_mask.clear()
 
     def __len__(self):
         return self.length

@@ -22,6 +22,7 @@ os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
 
 import numpy as np
 import torch
+from PIL import Image
 try:
     from torch import mps
 except:
@@ -58,6 +59,11 @@ class App(QWidget):
         self.s2m_controller = s2m_ctrl
         self.fbrs_controller = fbrs_ctrl
         self.config = config
+        self.output_path = os.path.normpath(
+            self.config.get('output_path', os.path.join(self.config['workspace'], 'outputs'))
+        )
+        os.makedirs(self.output_path, exist_ok=True)
+        self.scene_mode_message = 'select time segment for reconstructing  scene'
         self.processor = InferenceCore(net, config)
         self.processor.set_all_labels(list(range(1, self.num_objects+1)))
         self.res_man = resource_manager
@@ -104,7 +110,7 @@ class App(QWidget):
         self.object_dial.setReadOnly(False)
         self.object_dial.setMaximumHeight(28)
         self.object_dial.setMaximumWidth(56)
-        self.object_dial.setMinimum(1)
+        self.object_dial.setMinimum(0)
         self.object_dial.setMaximum(self.num_objects)
         self.object_dial.editingFinished.connect(self.on_object_dial_change)
 
@@ -159,35 +165,6 @@ class App(QWidget):
         self.recon_button.clicked.connect(self.on_recon_time_save)
         self.recon_add_button = QPushButton('New Segment')
         self.recon_add_button.clicked.connect(self.on_recon_segment_new)
-
-        # scene reconstruction time controls
-        self.scene_segment = QSpinBox()
-        self.scene_segment.setMaximumHeight(28)
-        self.scene_segment.setMaximumWidth(60)
-        self.scene_segment.setMinimum(1)
-        self.scene_segment.setMaximum(9999)
-        self.scene_segment.valueChanged.connect(self.on_scene_segment_change)
-
-        self.scene_start = QSpinBox()
-        self.scene_start.setMaximumHeight(28)
-        self.scene_start.setMaximumWidth(80)
-        self.scene_start.setMinimum(0)
-        self.scene_start.setMaximum(self.num_frames-1)
-        self.scene_start.valueChanged.connect(self.on_scene_time_change)
-        self.scene_start.editingFinished.connect(self.on_scene_time_commit)
-
-        self.scene_end = QSpinBox()
-        self.scene_end.setMaximumHeight(28)
-        self.scene_end.setMaximumWidth(80)
-        self.scene_end.setMinimum(0)
-        self.scene_end.setMaximum(self.num_frames-1)
-        self.scene_end.valueChanged.connect(self.on_scene_time_change)
-        self.scene_end.editingFinished.connect(self.on_scene_time_commit)
-
-        self.scene_button = QPushButton('Scene Reconstruction Time')
-        self.scene_button.clicked.connect(self.on_scene_time_save)
-        self.scene_add_button = QPushButton('New Scene Segment')
-        self.scene_add_button.clicked.connect(self.on_scene_segment_new)
 
         # combobox
         self.combo = QComboBox(self)
@@ -292,7 +269,6 @@ class App(QWidget):
         interact_topbox = QHBoxLayout()
         interact_botbox = QHBoxLayout()
         interact_recon_box = QHBoxLayout()
-        interact_scene_box = QHBoxLayout()
         interact_topbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
         interact_topbox.addWidget(self.lcd)
         interact_topbox.addWidget(self.play_button)
@@ -313,18 +289,9 @@ class App(QWidget):
         interact_recon_box.addWidget(self.recon_end)
         interact_recon_box.addWidget(self.recon_button)
         interact_recon_box.addWidget(self.recon_add_button)
-        interact_scene_box.addWidget(QLabel('Scene segment:'))
-        interact_scene_box.addWidget(self.scene_segment)
-        interact_scene_box.addWidget(QLabel('Scene start:'))
-        interact_scene_box.addWidget(self.scene_start)
-        interact_scene_box.addWidget(QLabel('Scene end:'))
-        interact_scene_box.addWidget(self.scene_end)
-        interact_scene_box.addWidget(self.scene_button)
-        interact_scene_box.addWidget(self.scene_add_button)
         interact_subbox.addLayout(interact_topbox)
         interact_subbox.addLayout(interact_botbox)
         interact_subbox.addLayout(interact_recon_box)
-        interact_subbox.addLayout(interact_scene_box)
         navi.addLayout(interact_subbox)
 
         apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, 
@@ -439,6 +406,7 @@ class App(QWidget):
         self.pressed = False
         self.right_click = False
         self.current_object = 1
+        self.object_dial.setValue(self.current_object)
         self.last_ex = self.last_ey = 0
 
         self.propagating = False
@@ -635,9 +603,33 @@ class App(QWidget):
         self.viz_mode = self.combo.currentText()
         self.show_current_frame()
 
+    def _is_scene_mode(self):
+        return self.current_object == 0
+
+    def _reset_state_for_object_switch(self):
+        self.res_man.clear_all_masks()
+        self.current_mask.fill(0)
+        self.current_prob = None
+        self.interacted_prob = None
+        self.curr_frame_dirty = False
+        self.current_image_torch = None
+        self.processor.clear_memory()
+        self.reset_this_interaction()
+        self.load_current_image_mask()
+
+    def _save_object_specific_mask(self):
+        if self.current_object <= 0:
+            return
+        mask_dir = self._object_mask_dir(self.current_object)
+        os.makedirs(mask_dir, exist_ok=True)
+        mask_path = os.path.join(mask_dir, f'{self.res_man.names[self.cursur]}.png')
+        object_mask = np.where(self.current_mask == self.current_object, self.current_object, 0).astype(np.uint8)
+        Image.fromarray(object_mask).save(mask_path)
+
     def save_current_mask(self):
         # save mask to hard disk
         self.res_man.save_mask(self.cursur, self.current_mask)
+        self._save_object_specific_mask()
 
     def tl_slide(self):
         # if we are propagating, the on_run function will take care of everything
@@ -734,6 +726,8 @@ class App(QWidget):
         self.propagating = False
 
     def on_commit(self):
+        if self.interacted_prob is None:
+            return
         self.complete_interaction()
         self.update_interacted_mask()
 
@@ -828,13 +822,16 @@ class App(QWidget):
             return
         self.current_object = number
         self.object_dial.setValue(number)
+        self._reset_state_for_object_switch()
         self._sync_recon_controls()
+        self._write_current_mode_metadata()
         if self.fbrs_controller is not None:
             self.fbrs_controller.unanchor()
         self.console_push_text(f'Current object changed to {number}.')
+        if self._is_scene_mode():
+            self.console_push_text(self.scene_mode_message)
         self.clear_brush()
         self.vis_brush(self.last_ex, self.last_ey)
-        self.update_interact_vis()
         self.show_current_frame()
 
     def clear_brush(self):
@@ -861,6 +858,10 @@ class App(QWidget):
                 self.vis_target_objects.append(target_object)
             self.console_push_text(f'Target objects for visualization changed to {self.vis_target_objects}')
             self.show_current_frame()
+            return
+
+        if self._is_scene_mode():
+            self.console_push_text(self.scene_mode_message)
             return
 
         self.right_click = (event.button() == Qt.MouseButton.RightButton)
@@ -926,6 +927,11 @@ class App(QWidget):
             self.interaction = None
 
     def on_mouse_release(self, event):
+        if self._is_scene_mode():
+            self.pressed = False
+            self.right_click = False
+            return
+
         if not self.pressed:
             # this can happen when the initial press is out-of-bound
             return
@@ -1061,10 +1067,25 @@ class App(QWidget):
     def _frame_id_str(self, index):
         return f'{index:0{self.frame_id_width}d}'
 
-    def _recon_json_path(self):
-        return os.path.join(self.config['workspace'], 'object.json')
+    def _scene_dir(self):
+        return os.path.join(self.output_path, 'scene')
 
     def _scene_json_path(self):
+        return os.path.join(self._scene_dir(), 'scene.json')
+
+    def _object_dir(self, obj_id):
+        return os.path.join(self.output_path, f'object_{obj_id}')
+
+    def _object_json_path(self, obj_id):
+        return os.path.join(self._object_dir(obj_id), 'object.json')
+
+    def _object_mask_dir(self, obj_id):
+        return os.path.join(self._object_dir(obj_id), 'masks')
+
+    def _legacy_recon_json_path(self):
+        return os.path.join(self.config['workspace'], 'object.json')
+
+    def _legacy_scene_json_path(self):
         return os.path.join(self.config['workspace'], 'scene.json')
 
     def _parse_frame_id(self, value):
@@ -1074,64 +1095,82 @@ class App(QWidget):
             return int(value)
         return None
 
-    def _load_recon_times(self):
-        recon_path = self._recon_json_path()
-        if not os.path.exists(recon_path):
-            return
+    def _read_json_file(self, json_path):
+        if not os.path.exists(json_path):
+            return None
         try:
-            with open(recon_path, 'r', encoding='utf-8') as handle:
-                payload = json.load(handle)
+            with open(json_path, 'r', encoding='utf-8') as handle:
+                return json.load(handle)
         except Exception as exc:
-            self.console_push_text(f'Failed to load {recon_path}: {exc}')
-            return
+            self.console_push_text(f'Failed to load {json_path}: {exc}')
+            return None
 
+    def _parse_object_entries(self, payload):
         if isinstance(payload, dict) and isinstance(payload.get('objects'), list):
-            entries = payload.get('objects', [])
-        elif isinstance(payload, list):
-            entries = payload
-        else:
-            return
+            return payload.get('objects', [])
+        if isinstance(payload, list):
+            return payload
+        return []
 
-        for entry in entries:
-            try:
-                obj_id = int(entry.get('object id'))
-            except Exception:
-                continue
-            if obj_id not in self.recon_segments:
-                continue
+    def _parse_object_segments(self, entry):
+        segments_data = entry.get('segments')
+        segments = {}
+        if isinstance(segments_data, list) and segments_data:
+            for idx, segment in enumerate(segments_data, start=1):
+                seg_id = segment.get('segment id', idx)
+                if isinstance(seg_id, str) and seg_id.isdigit():
+                    seg_id = int(seg_id)
+                if not isinstance(seg_id, int):
+                    continue
 
-            segments_data = entry.get('segments')
-            segments = {}
-            if isinstance(segments_data, list) and segments_data:
-                for idx, segment in enumerate(segments_data, start=1):
-                    seg_id = segment.get('segment id', idx)
-                    if isinstance(seg_id, str) and seg_id.isdigit():
-                        seg_id = int(seg_id)
-                    if not isinstance(seg_id, int):
-                        continue
-
-                    start_id = segment.get('start id')
-                    end_id = segment.get('end id')
-                    start_index = self._parse_frame_id(start_id)
-                    end_index = self._parse_frame_id(end_id)
-                    if start_index is None or end_index is None:
-                        continue
-                    segments[seg_id] = {
-                        'start': min(max(start_index, 0), self.num_frames-1),
-                        'end': min(max(end_index, 0), self.num_frames-1),
-                    }
-            else:
-                start_id = entry.get('start id')
-                end_id = entry.get('end id')
+                start_id = segment.get('start id')
+                end_id = segment.get('end id')
                 start_index = self._parse_frame_id(start_id)
                 end_index = self._parse_frame_id(end_id)
                 if start_index is None or end_index is None:
                     continue
-                segments[1] = {
+                segments[seg_id] = {
                     'start': min(max(start_index, 0), self.num_frames-1),
                     'end': min(max(end_index, 0), self.num_frames-1),
                 }
+        else:
+            start_id = entry.get('start id')
+            end_id = entry.get('end id')
+            start_index = self._parse_frame_id(start_id)
+            end_index = self._parse_frame_id(end_id)
+            if start_index is None or end_index is None:
+                return {}
+            segments[1] = {
+                'start': min(max(start_index, 0), self.num_frames-1),
+                'end': min(max(end_index, 0), self.num_frames-1),
+            }
+        return segments
 
+    def _extract_segments_for_object(self, entries, obj_id):
+        for entry in entries:
+            try:
+                entry_obj_id = int(entry.get('object id'))
+            except Exception:
+                continue
+            if entry_obj_id != obj_id:
+                continue
+            return self._parse_object_segments(entry)
+        return {}
+
+    def _load_recon_times(self):
+        legacy_payload = None
+        legacy_entries = []
+        for obj_id in range(1, self.num_objects+1):
+            payload = self._read_json_file(self._object_json_path(obj_id))
+            if payload is None:
+                if legacy_payload is None:
+                    legacy_payload = self._read_json_file(self._legacy_recon_json_path())
+                    legacy_entries = self._parse_object_entries(legacy_payload)
+                entries = legacy_entries
+            else:
+                entries = self._parse_object_entries(payload)
+
+            segments = self._extract_segments_for_object(entries, obj_id)
             if segments:
                 self.recon_segments[obj_id] = segments
                 self.current_segment_per_object[obj_id] = sorted(segments.keys())[0]
@@ -1145,17 +1184,12 @@ class App(QWidget):
         }
         self.current_scene_segment = 1
         self._load_scene_times()
-        self._sync_scene_controls()
 
     def _load_scene_times(self):
-        scene_path = self._scene_json_path()
-        if not os.path.exists(scene_path):
-            return
-        try:
-            with open(scene_path, 'r', encoding='utf-8') as handle:
-                payload = json.load(handle)
-        except Exception as exc:
-            self.console_push_text(f'Failed to load {scene_path}: {exc}')
+        payload = self._read_json_file(self._scene_json_path())
+        if payload is None:
+            payload = self._read_json_file(self._legacy_scene_json_path())
+        if payload is None:
             return
 
         segments_data = None
@@ -1192,23 +1226,6 @@ class App(QWidget):
                 'end': self.cursur,
             }
 
-    def _sync_scene_controls(self):
-        seg_id = self.current_scene_segment
-        if seg_id not in self.scene_segments and self.scene_segments:
-            seg_id = sorted(self.scene_segments.keys())[0]
-            self.current_scene_segment = seg_id
-        self._ensure_scene_segment(seg_id)
-        recon = self.scene_segments[seg_id]
-        self.scene_segment.blockSignals(True)
-        self.scene_start.blockSignals(True)
-        self.scene_end.blockSignals(True)
-        self.scene_segment.setValue(seg_id)
-        self.scene_start.setValue(recon['start'])
-        self.scene_end.setValue(recon['end'])
-        self.scene_segment.blockSignals(False)
-        self.scene_start.blockSignals(False)
-        self.scene_end.blockSignals(False)
-
     def _write_scene_times(self):
         segments = []
         for seg_id in sorted(self.scene_segments.keys()):
@@ -1221,6 +1238,7 @@ class App(QWidget):
 
         payload = {'segments': segments}
         scene_path = self._scene_json_path()
+        os.makedirs(os.path.dirname(scene_path), exist_ok=True)
         try:
             with open(scene_path, 'w', encoding='utf-8') as handle:
                 json.dump(payload, handle, indent=2)
@@ -1237,15 +1255,23 @@ class App(QWidget):
             }
 
     def _sync_recon_controls(self):
-        obj_id = self.current_object
-        seg_id = self.current_segment_per_object.get(obj_id, 1)
-        segments = self.recon_segments.get(obj_id, {})
-        if seg_id not in segments and segments:
-            seg_id = sorted(segments.keys())[0]
-            self.current_segment_per_object[obj_id] = seg_id
+        if self._is_scene_mode():
+            seg_id = self.current_scene_segment
+            if seg_id not in self.scene_segments and self.scene_segments:
+                seg_id = sorted(self.scene_segments.keys())[0]
+                self.current_scene_segment = seg_id
+            self._ensure_scene_segment(seg_id)
+            recon = self.scene_segments[seg_id]
+        else:
+            obj_id = self.current_object
+            seg_id = self.current_segment_per_object.get(obj_id, 1)
+            segments = self.recon_segments.get(obj_id, {})
+            if seg_id not in segments and segments:
+                seg_id = sorted(segments.keys())[0]
+                self.current_segment_per_object[obj_id] = seg_id
+            self._ensure_segment(obj_id, seg_id)
+            recon = self.recon_segments[obj_id][seg_id]
 
-        self._ensure_segment(obj_id, seg_id)
-        recon = self.recon_segments[obj_id][seg_id]
         self.recon_segment.blockSignals(True)
         self.recon_start.blockSignals(True)
         self.recon_end.blockSignals(True)
@@ -1256,27 +1282,20 @@ class App(QWidget):
         self.recon_start.blockSignals(False)
         self.recon_end.blockSignals(False)
 
-    def _write_recon_times(self):
-        objects = []
-        for obj_id in range(1, self.num_objects+1):
-            segments = self.recon_segments.get(obj_id)
-            if not segments:
-                continue
-            segment_entries = []
-            for seg_id in sorted(segments.keys()):
-                recon = segments[seg_id]
-                segment_entries.append({
-                    'segment id': seg_id,
-                    'start id': self._frame_id_str(recon['start']),
-                    'end id': self._frame_id_str(recon['end']),
-                })
-            objects.append({
-                'object id': obj_id,
-                'segments': segment_entries,
+    def _write_recon_times(self, obj_id):
+        segments = self.recon_segments.get(obj_id, {})
+        segment_entries = []
+        for seg_id in sorted(segments.keys()):
+            recon = segments[seg_id]
+            segment_entries.append({
+                'segment id': seg_id,
+                'start id': self._frame_id_str(recon['start']),
+                'end id': self._frame_id_str(recon['end']),
             })
 
-        payload = {'objects': objects}
-        recon_path = self._recon_json_path()
+        payload = {'objects': [{'object id': obj_id, 'segments': segment_entries}]}
+        recon_path = self._object_json_path(obj_id)
+        os.makedirs(os.path.dirname(recon_path), exist_ok=True)
         try:
             with open(recon_path, 'w', encoding='utf-8') as handle:
                 json.dump(payload, handle, indent=2)
@@ -1284,12 +1303,16 @@ class App(QWidget):
         except Exception as exc:
             self.console_push_text(f'Failed to write {recon_path}: {exc}')
 
+    def _write_current_mode_metadata(self):
+        if self._is_scene_mode():
+            self._write_scene_times()
+        else:
+            self._write_recon_times(self.current_object)
+
     def on_recon_time_change(self, *_):
         if not hasattr(self, 'recon_segments'):
             return
-        obj_id = self.current_object
         seg_id = self.recon_segment.value()
-        self._ensure_segment(obj_id, seg_id)
         start_index = self.recon_start.value()
         end_index = self.recon_end.value()
         if end_index < start_index:
@@ -1297,11 +1320,21 @@ class App(QWidget):
                 return
             end_index = start_index
             self.recon_end.setValue(end_index)
-        self.recon_segments[obj_id][seg_id] = {
-            'start': start_index,
-            'end': end_index,
-        }
-        self._write_recon_times()
+        if self._is_scene_mode():
+            self.current_scene_segment = seg_id
+            self._ensure_scene_segment(seg_id)
+            self.scene_segments[seg_id] = {
+                'start': start_index,
+                'end': end_index,
+            }
+        else:
+            obj_id = self.current_object
+            self._ensure_segment(obj_id, seg_id)
+            self.recon_segments[obj_id][seg_id] = {
+                'start': start_index,
+                'end': end_index,
+            }
+        self._write_current_mode_metadata()
 
     def on_recon_time_save(self):
         self.on_recon_time_commit()
@@ -1309,105 +1342,66 @@ class App(QWidget):
     def on_recon_time_commit(self):
         if not hasattr(self, 'recon_segments'):
             return
-        obj_id = self.current_object
         seg_id = self.recon_segment.value()
-        self._ensure_segment(obj_id, seg_id)
         start_index = self.recon_start.value()
         end_index = self.recon_end.value()
         if end_index < start_index:
             end_index = start_index
             self.recon_end.setValue(end_index)
-        self.recon_segments[obj_id][seg_id] = {
-            'start': start_index,
-            'end': end_index,
-        }
-        self._write_recon_times()
+        if self._is_scene_mode():
+            self.current_scene_segment = seg_id
+            self._ensure_scene_segment(seg_id)
+            self.scene_segments[seg_id] = {
+                'start': start_index,
+                'end': end_index,
+            }
+        else:
+            obj_id = self.current_object
+            self._ensure_segment(obj_id, seg_id)
+            self.recon_segments[obj_id][seg_id] = {
+                'start': start_index,
+                'end': end_index,
+            }
+        self._write_current_mode_metadata()
 
     def on_recon_segment_change(self, *_):
         if not hasattr(self, 'recon_segments'):
             return
-        obj_id = self.current_object
         seg_id = self.recon_segment.value()
-        self.current_segment_per_object[obj_id] = seg_id
-        created = seg_id not in self.recon_segments.get(obj_id, {})
-        self._ensure_segment(obj_id, seg_id)
+        if self._is_scene_mode():
+            created = seg_id not in self.scene_segments
+            self.current_scene_segment = seg_id
+            self._ensure_scene_segment(seg_id)
+        else:
+            obj_id = self.current_object
+            self.current_segment_per_object[obj_id] = seg_id
+            created = seg_id not in self.recon_segments.get(obj_id, {})
+            self._ensure_segment(obj_id, seg_id)
         self._sync_recon_controls()
         if created:
-            self._write_recon_times()
+            self._write_current_mode_metadata()
 
     def on_recon_segment_new(self):
         if not hasattr(self, 'recon_segments'):
             return
-        obj_id = self.current_object
-        segments = self.recon_segments.get(obj_id, {})
-        next_seg_id = max(segments.keys(), default=0) + 1
-        self.current_segment_per_object[obj_id] = next_seg_id
-        self.recon_segments[obj_id][next_seg_id] = {
-            'start': self.cursur,
-            'end': self.cursur,
-        }
+        if self._is_scene_mode():
+            next_seg_id = max(self.scene_segments.keys(), default=0) + 1
+            self.current_scene_segment = next_seg_id
+            self.scene_segments[next_seg_id] = {
+                'start': self.cursur,
+                'end': self.cursur,
+            }
+        else:
+            obj_id = self.current_object
+            segments = self.recon_segments.get(obj_id, {})
+            next_seg_id = max(segments.keys(), default=0) + 1
+            self.current_segment_per_object[obj_id] = next_seg_id
+            self.recon_segments[obj_id][next_seg_id] = {
+                'start': self.cursur,
+                'end': self.cursur,
+            }
         self._sync_recon_controls()
-        self._write_recon_times()
-
-    def on_scene_time_change(self, *_):
-        if not hasattr(self, 'scene_segments'):
-            return
-        seg_id = self.scene_segment.value()
-        self._ensure_scene_segment(seg_id)
-        start_index = self.scene_start.value()
-        end_index = self.scene_end.value()
-        if end_index < start_index:
-            if self.scene_end.hasFocus():
-                return
-            end_index = start_index
-            self.scene_end.setValue(end_index)
-        self.scene_segments[seg_id] = {
-            'start': start_index,
-            'end': end_index,
-        }
-        self._write_scene_times()
-
-    def on_scene_time_commit(self):
-        if not hasattr(self, 'scene_segments'):
-            return
-        seg_id = self.scene_segment.value()
-        self._ensure_scene_segment(seg_id)
-        start_index = self.scene_start.value()
-        end_index = self.scene_end.value()
-        if end_index < start_index:
-            end_index = start_index
-            self.scene_end.setValue(end_index)
-        self.scene_segments[seg_id] = {
-            'start': start_index,
-            'end': end_index,
-        }
-        self._write_scene_times()
-
-    def on_scene_time_save(self):
-        self.on_scene_time_commit()
-
-    def on_scene_segment_change(self, *_):
-        if not hasattr(self, 'scene_segments'):
-            return
-        seg_id = self.scene_segment.value()
-        created = seg_id not in self.scene_segments
-        self.current_scene_segment = seg_id
-        self._ensure_scene_segment(seg_id)
-        self._sync_scene_controls()
-        if created:
-            self._write_scene_times()
-
-    def on_scene_segment_new(self):
-        if not hasattr(self, 'scene_segments'):
-            return
-        next_seg_id = max(self.scene_segments.keys(), default=0) + 1
-        self.current_scene_segment = next_seg_id
-        self.scene_segments[next_seg_id] = {
-            'start': self.cursur,
-            'end': self.cursur,
-        }
-        self._sync_scene_controls()
-        self._write_scene_times()
+        self._write_current_mode_metadata()
 
     def on_import_mask(self):
         file_name = self._open_file('Mask')

@@ -53,6 +53,7 @@ if __name__ == '__main__':
     parser.add_argument('--images', help='Folders containing input images.', default=None)
     parser.add_argument('--video', help='Video file readable by OpenCV.', default=None)
     parser.add_argument('--workspace', help='directory for storing buffered images (if needed) and output masks', default=None)
+    parser.add_argument('--output_path', help='directory for object/scene outputs', default=None)
 
     parser.add_argument('--buffer_size', help='Correlate with CPU memory consumption', type=int, default=100)
     
@@ -89,6 +90,21 @@ if __name__ == '__main__':
                 'Either images, video, or workspace has to be specified')
 
         config["workspace"] = path.join('./workspace', basename)
+
+    if config["output_path"] is None:
+        if config["images"] is not None:
+            config["output_path"] = path.normpath(path.join(config["images"], '..', 'outputs'))
+        elif config["video"] is not None:
+            config["output_path"] = path.normpath(path.join(path.dirname(config["video"]), 'outputs'))
+        else:
+            config["output_path"] = path.join(config["workspace"], 'outputs')
+
+    # When explicit image input is provided, always read directly from it and keep
+    # temporary masks outside the repo workspace to avoid stale auto-loading.
+    if config["images"] is not None:
+        config["prefer_input_images"] = True
+        config["mask_dir"] = path.join(config["output_path"], '_runtime', 'masks')
+        config["reset_workspace_masks"] = True
 
     with torch.cuda.amp.autocast(enabled=not args.no_amp) if device.type == 'cuda' else nullcontext():
         # Load our checkpoint
