@@ -30,7 +30,8 @@ except:
 
 from PySide6.QtWidgets import (QWidget, QApplication, QComboBox, QCheckBox,
     QHBoxLayout, QLabel, QPushButton, QTextEdit, QSpinBox, QFileDialog,
-    QPlainTextEdit, QVBoxLayout, QSizePolicy, QButtonGroup, QSlider, QRadioButton)
+    QPlainTextEdit, QVBoxLayout, QSizePolicy, QButtonGroup, QSlider, QRadioButton,
+    QMessageBox)
 
 from PySide6.QtGui import QPixmap, QKeySequence, QImage, QTextCursor, QIcon, QShortcut
 from PySide6.QtCore import Qt, QTimer
@@ -64,6 +65,10 @@ class App(QWidget):
         )
         os.makedirs(self.output_path, exist_ok=True)
         self.scene_mode_message = 'select time segment for reconstructing  scene'
+        self.scene_mode_popup_message = (
+            'Please first select timesteps for reconstructing the scene and downsample ratio, '
+            'then run downsample.'
+        )
         self.processor = InferenceCore(net, config)
         self.processor.set_all_labels(list(range(1, self.num_objects+1)))
         self.res_man = resource_manager
@@ -161,10 +166,28 @@ class App(QWidget):
         self.recon_end.valueChanged.connect(self.on_recon_time_change)
         self.recon_end.editingFinished.connect(self.on_recon_time_commit)
 
-        self.recon_button = QPushButton('Reconstruction Time')
-        self.recon_button.clicked.connect(self.on_recon_time_save)
-        self.recon_add_button = QPushButton('New Segment')
-        self.recon_add_button.clicked.connect(self.on_recon_segment_new)
+        self.recon_total_label = QLabel('Reconstruction Time:')
+        self.recon_total_display = QSpinBox()
+        self.recon_total_display.setMaximumHeight(28)
+        self.recon_total_display.setMaximumWidth(80)
+        self.recon_total_display.setMinimum(0)
+        self.recon_total_display.setMaximum(self.num_frames)
+        self.recon_total_display.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.recon_total_display.setReadOnly(True)
+        self.recon_total_display.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.recon_total_display.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.downsample_ratio_label = QLabel('Downsample ratio:')
+        self.downsample_ratio_box = QSpinBox()
+        self.downsample_ratio_box.setMaximumHeight(28)
+        self.downsample_ratio_box.setMaximumWidth(100)
+        self.downsample_ratio_box.setMinimum(1)
+        self.downsample_ratio_box.setMaximum(100)
+        self.downsample_ratio_box.setSingleStep(1)
+        self.downsample_ratio_box.setValue(1)
+
+        self.run_downsample_button = QPushButton('Run downsample')
+        self.run_downsample_button.clicked.connect(self.on_run_downsample)
 
         # combobox
         self.combo = QComboBox(self)
@@ -269,6 +292,7 @@ class App(QWidget):
         interact_topbox = QHBoxLayout()
         interact_botbox = QHBoxLayout()
         interact_recon_box = QHBoxLayout()
+        interact_downsample_box = QHBoxLayout()
         interact_topbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
         interact_topbox.addWidget(self.lcd)
         interact_topbox.addWidget(self.play_button)
@@ -287,11 +311,16 @@ class App(QWidget):
         interact_recon_box.addWidget(self.recon_start)
         interact_recon_box.addWidget(QLabel('Recon end:'))
         interact_recon_box.addWidget(self.recon_end)
-        interact_recon_box.addWidget(self.recon_button)
-        interact_recon_box.addWidget(self.recon_add_button)
+        interact_recon_box.addWidget(self.recon_total_label)
+        interact_recon_box.addWidget(self.recon_total_display)
+        interact_recon_box.addWidget(self.downsample_ratio_label)
+        interact_recon_box.addWidget(self.downsample_ratio_box)
+        interact_downsample_box.addStretch(1)
+        interact_downsample_box.addWidget(self.run_downsample_button)
         interact_subbox.addLayout(interact_topbox)
         interact_subbox.addLayout(interact_botbox)
         interact_subbox.addLayout(interact_recon_box)
+        interact_subbox.addLayout(interact_downsample_box)
         navi.addLayout(interact_subbox)
 
         apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, 
@@ -431,6 +460,7 @@ class App(QWidget):
 
         self._init_recon_times()
         self._init_scene_times()
+        self._update_scene_downsample_controls()
         self.load_current_image_mask()
         self.show_current_frame()
         self.show()
@@ -471,7 +501,8 @@ class App(QWidget):
         if not no_mask:
             loaded_mask = self.res_man.get_mask(self.cursur)
             if loaded_mask is None:
-                self.current_mask.fill(0)
+                h, w = self.current_image.shape[:2]
+                self.current_mask = np.zeros((h, w), dtype=np.uint8)
             else:
                 self.current_mask = loaded_mask.copy()
             self.current_prob = None
@@ -605,6 +636,88 @@ class App(QWidget):
 
     def _is_scene_mode(self):
         return self.current_object == 0
+
+    def _show_scene_mode_popup(self):
+        QMessageBox.information(self, 'Reminder', self.scene_mode_popup_message)
+
+    def _update_scene_downsample_controls(self):
+        show = self._is_scene_mode()
+        self.downsample_ratio_label.setVisible(show)
+        self.downsample_ratio_box.setVisible(show)
+        self.run_downsample_button.setVisible(show)
+
+    def _scene_indices_from_segments(self):
+        if not self.scene_segments:
+            return []
+
+        scene_index_set = set()
+        for segment in self.scene_segments.values():
+            start = int(segment.get('start', 0))
+            end = int(segment.get('end', 0))
+            lo = max(0, min(start, end))
+            hi = min(self.num_frames - 1, max(start, end))
+            scene_index_set.update(range(lo, hi + 1))
+
+        return sorted(scene_index_set)
+
+    def _reload_session_with_image_dir(self, image_dir):
+        self.pause_propagation()
+        self.res_man.reload_image_dir(image_dir, clear_masks=True)
+
+        self.num_frames = len(self.res_man)
+        self.height, self.width = self.res_man.h, self.res_man.w
+        self.cursur = 0
+        self.curr_frame_dirty = False
+        self.interacted_prob = None
+        self.interaction = None
+        self.pressed = False
+        self.right_click = False
+
+        self.processor.clear_memory()
+        self.current_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.current_image_torch = None
+        self.current_mask = np.zeros((self.height, self.width), dtype=np.uint8)
+        self.current_prob = torch.zeros((self.num_objects, self.height, self.width), dtype=torch.float).to(self.device)
+
+        self.viz = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.viz_with_stroke = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.vis_map = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.vis_alpha = np.zeros((self.height, self.width, 1), dtype=np.float32)
+        self.brush_vis_map = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.brush_vis_alpha = np.zeros((self.height, self.width, 1), dtype=np.float32)
+        self.last_ex = min(max(self.last_ex, 0), self.width - 1)
+        self.last_ey = min(max(self.last_ey, 0), self.height - 1)
+
+        self.tl_slider.blockSignals(True)
+        self.tl_slider.setMaximum(self.num_frames - 1)
+        self.tl_slider.setValue(0)
+        self.tl_slider.blockSignals(False)
+        self.lcd.setText('{: 3d} / {: 3d}'.format(0, self.num_frames-1))
+
+        self.recon_start.setMaximum(self.num_frames - 1)
+        self.recon_end.setMaximum(self.num_frames - 1)
+        self.recon_total_display.setMaximum(self.num_frames)
+
+        self.scene_segments = {1: {'start': 0, 'end': self.num_frames - 1}}
+        self.current_scene_segment = 1
+        self.recon_segments = {
+            obj_id: {1: {'start': 0, 'end': self.num_frames - 1}}
+            for obj_id in range(1, self.num_objects+1)
+        }
+        self.current_segment_per_object = {
+            obj_id: 1 for obj_id in range(1, self.num_objects+1)
+        }
+
+        # After downsample/reload, go back to object segmentation mode.
+        self.current_object = 1 if self.num_objects >= 1 else 0
+        self.object_dial.blockSignals(True)
+        self.object_dial.setValue(self.current_object)
+        self.object_dial.blockSignals(False)
+        self._update_scene_downsample_controls()
+        self._sync_recon_controls()
+
+        self.load_current_image_mask()
+        self.show_current_frame()
 
     def _reset_state_for_object_switch(self):
         self.res_man.clear_all_masks()
@@ -830,9 +943,72 @@ class App(QWidget):
         self.console_push_text(f'Current object changed to {number}.')
         if self._is_scene_mode():
             self.console_push_text(self.scene_mode_message)
+            self._show_scene_mode_popup()
+        self._update_scene_downsample_controls()
         self.clear_brush()
         self.vis_brush(self.last_ex, self.last_ey)
         self.show_current_frame()
+
+    def on_run_downsample(self):
+        if not self._is_scene_mode():
+            self.console_push_text('Downsample is only available when Current Object ID is 0.')
+            return
+
+        self.run_downsample_button.setEnabled(False)
+        try:
+            ratio = int(self.downsample_ratio_box.value())
+
+            scene_indices = self._scene_indices_from_segments()
+            if not scene_indices:
+                self.console_push_text('No scene timesteps selected.')
+                return
+
+            downsampled_indices = scene_indices[::ratio]
+            if not downsampled_indices:
+                self.console_push_text('No frames selected after timestep downsample.')
+                print('Downsample: no frames selected after timestep downsample.', flush=True)
+                return
+
+            out_dir = os.path.join(self._scene_dir(), 'downsample')
+            os.makedirs(out_dir, exist_ok=True)
+            for name in os.listdir(out_dir):
+                out_path = os.path.join(out_dir, name)
+                if os.path.isfile(out_path):
+                    os.remove(out_path)
+
+            total_to_save = len(downsampled_indices)
+            print(
+                f'Downsample started: ratio={ratio}, input_frames={len(scene_indices)}, '
+                f'output_frames={total_to_save}, output={out_dir}',
+                flush=True,
+            )
+
+            saved = 0
+            for idx in downsampled_indices:
+                image = self.res_man.get_image(idx)
+                out_name = self.res_man.image_files[idx]
+                Image.fromarray(image).save(os.path.join(out_dir, out_name))
+                saved += 1
+                if saved % 20 == 0:
+                    QApplication.processEvents()
+                if saved % 50 == 0 or saved == total_to_save:
+                    print(f'Downsample progress: {saved}/{total_to_save}', flush=True)
+
+            self.console_push_text(
+                f'Timestep downsample done. ratio={ratio:g}, input_frames={len(scene_indices)}, '
+                f'output_frames={saved}, output={out_dir}'
+            )
+            print(
+                f'Downsample finished: saved {saved}/{total_to_save} frames to {out_dir}',
+                flush=True,
+            )
+            self._reload_session_with_image_dir(out_dir)
+            self.console_push_text(f'Reloaded downsampled images for segmentation from {out_dir}')
+        except Exception as exc:
+            self.console_push_text(f'Downsample failed: {exc}')
+            print(f'Downsample failed: {exc}', flush=True)
+        finally:
+            self.run_downsample_button.setEnabled(True)
 
     def clear_brush(self):
         self.brush_vis_map.fill(0)
@@ -1254,6 +1430,34 @@ class App(QWidget):
                 'end': self.cursur,
             }
 
+    def _get_active_segments(self):
+        if self._is_scene_mode():
+            return self.scene_segments
+        return self.recon_segments.get(self.current_object, {})
+
+    def _compute_total_selected_timesteps(self, segments):
+        if not segments:
+            return 0
+        intervals = []
+        for segment in segments.values():
+            start = int(segment.get('start', 0))
+            end = int(segment.get('end', 0))
+            intervals.append((min(start, end), max(start, end)))
+
+        intervals.sort()
+        merged = []
+        for start, end in intervals:
+            if not merged or start > merged[-1][1] + 1:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+
+        return sum(end - start + 1 for start, end in merged)
+
+    def _update_recon_button_text(self):
+        total_steps = self._compute_total_selected_timesteps(self._get_active_segments())
+        self.recon_total_display.setValue(total_steps)
+
     def _sync_recon_controls(self):
         if self._is_scene_mode():
             seg_id = self.current_scene_segment
@@ -1281,6 +1485,7 @@ class App(QWidget):
         self.recon_segment.blockSignals(False)
         self.recon_start.blockSignals(False)
         self.recon_end.blockSignals(False)
+        self._update_recon_button_text()
 
     def _write_recon_times(self, obj_id):
         segments = self.recon_segments.get(obj_id, {})
@@ -1308,6 +1513,7 @@ class App(QWidget):
             self._write_scene_times()
         else:
             self._write_recon_times(self.current_object)
+        self._update_recon_button_text()
 
     def on_recon_time_change(self, *_):
         if not hasattr(self, 'recon_segments'):

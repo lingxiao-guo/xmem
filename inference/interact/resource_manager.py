@@ -104,19 +104,7 @@ class ResourceManager:
             self._clear_cached_images()
             self._copy_resize_frames(images)
 
-        # read all frame names (keep full filenames for loading)
-        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
-        self.image_files = sorted(
-            f for f in os.listdir(self.image_dir) if path.splitext(f)[1].lower() in image_exts
-        )
-        self.names = [path.splitext(f)[0] for f in self.image_files]  # base names for masks/visualizations
-        self.length = len(self.image_files)
-
-        assert self.length > 0, f'No images found! Check {self.workspace}/images. Remove folder if necessary.'
-
-        print(f'{self.length} images found.')
-
-        self.height, self.width = self.get_image(0).shape[:2]
+        self.reload_image_dir(self.image_dir, clear_masks=False)
         self.visualization_init = False
 
     def _clear_cached_images(self):
@@ -231,6 +219,25 @@ class ResourceManager:
             if path.isfile(mask_path):
                 os.remove(mask_path)
         self.get_mask.clear()
+
+    def reload_image_dir(self, image_dir, clear_masks=True):
+        self.image_dir = image_dir
+        if clear_masks:
+            self.clear_all_masks()
+
+        self.get_image.clear()
+        self.get_mask.clear()
+
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+        self.image_files = sorted(
+            f for f in os.listdir(self.image_dir) if path.splitext(f)[1].lower() in image_exts
+        )
+        self.names = [path.splitext(f)[0] for f in self.image_files]
+        self.length = len(self.image_files)
+
+        assert self.length > 0, f'No images found in {self.image_dir}.'
+        self.height, self.width = self.get_image(0).shape[:2]
+        print(f'{self.length} images loaded from {self.image_dir}.')
 
     def __len__(self):
         return self.length
