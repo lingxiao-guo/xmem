@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 from typing import Dict, List, Optional, Tuple
 
@@ -139,9 +140,13 @@ def build_index_map(dir_path: str) -> Dict[int, str]:
         if ext not in allowed_exts:
             continue
         stem = os.path.splitext(name)[0]
-        if not stem.isdigit():
+        if stem.isdigit():
+            index_map[int(stem)] = name
             continue
-        index_map[int(stem)] = name
+        match = re.search(r"(\d+)$", stem)
+        if match is None:
+            continue
+        index_map[int(match.group(1))] = name
     return index_map
 
  
@@ -172,7 +177,7 @@ def save_object_mask(
     mask = image.convert("P")
     mask_array = np.array(mask, dtype=np.uint8)
     mask_array = np.where(mask_array == object_id, 255, 0).astype(np.uint8)
-    mask = Image.fromarray(mask_array, mode="L")
+    mask = Image.fromarray(mask_array)
     mask.save(dst_path)
 
 

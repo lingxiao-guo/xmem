@@ -212,12 +212,18 @@ class App(QWidget):
         self.radio_fbrs = QRadioButton('Click')
         self.radio_s2m = QRadioButton('Scribble')
         self.radio_free = QRadioButton('Free')
+        self.radio_s2m_clean = QRadioButton('Scribble Clean')
+        self.radio_free_clean = QRadioButton('Free Clean')
         self.interaction_group.addButton(self.radio_fbrs)
         self.interaction_group.addButton(self.radio_s2m)
         self.interaction_group.addButton(self.radio_free)
+        self.interaction_group.addButton(self.radio_s2m_clean)
+        self.interaction_group.addButton(self.radio_free_clean)
         self.radio_fbrs.toggled.connect(self.interaction_radio_clicked)
         self.radio_s2m.toggled.connect(self.interaction_radio_clicked)
         self.radio_free.toggled.connect(self.interaction_radio_clicked)
+        self.radio_s2m_clean.toggled.connect(self.interaction_radio_clicked)
+        self.radio_free_clean.toggled.connect(self.interaction_radio_clicked)
         self.radio_fbrs.toggle()
 
         # Main canvas -> QLabel
@@ -300,6 +306,8 @@ class App(QWidget):
         interact_topbox.addWidget(self.radio_s2m)
         interact_topbox.addWidget(self.radio_fbrs)
         interact_topbox.addWidget(self.radio_free)
+        interact_topbox.addWidget(self.radio_s2m_clean)
+        interact_topbox.addWidget(self.radio_free_clean)
         interact_topbox.addWidget(self.reset_button)
         interact_topbox.addWidget(self.reset_object_button)
         interact_botbox.addWidget(QLabel('Current Object ID:'))
@@ -484,6 +492,10 @@ class App(QWidget):
             self.curr_interaction = 'Scribble'
             self.brush_size = 3
             self.brush_slider.setDisabled(True)
+        elif self.radio_s2m_clean.isChecked():
+            self.curr_interaction = 'ScribbleClean'
+            self.brush_size = 3
+            self.brush_slider.setDisabled(True)
         elif self.radio_fbrs.isChecked():
             self.curr_interaction = 'Click'
             self.brush_size = 3
@@ -492,7 +504,11 @@ class App(QWidget):
             self.brush_slider.setDisabled(False)
             self.brush_slide()
             self.curr_interaction = 'Free'
-        if self.curr_interaction == 'Scribble':
+        elif self.radio_free_clean.isChecked():
+            self.brush_slider.setDisabled(False)
+            self.brush_slide()
+            self.curr_interaction = 'FreeClean'
+        if self.curr_interaction == 'Scribble' or self.curr_interaction == 'ScribbleClean':
             self.commit_button.setEnabled(True)
         else:
             self.commit_button.setEnabled(False)
@@ -655,13 +671,29 @@ class App(QWidget):
 
     def brush_slide(self):
         self.brush_size = self.brush_slider.value()
-        self.brush_label.setText('Brush size (in free mode): %d' % self.brush_size)
+        self.brush_label.setText('Brush size (in free modes): %d' % self.brush_size)
         try:
             if type(self.interaction) == FreeInteraction:
                 self.interaction.set_size(self.brush_size)
         except AttributeError:
             # Initialization, forget about it
             pass
+
+    def _is_scribble_mode(self):
+        return self.curr_interaction == 'Scribble' or self.curr_interaction == 'ScribbleClean'
+
+    def _is_free_mode(self):
+        return self.curr_interaction == 'Free' or self.curr_interaction == 'FreeClean'
+
+    def _is_clean_mode(self):
+        return self.curr_interaction == 'ScribbleClean' or self.curr_interaction == 'FreeClean'
+
+    def _get_active_object(self):
+        if self._is_clean_mode():
+            return 0
+        if self.right_click and (self._is_scribble_mode() or self._is_free_mode()):
+            return 0
+        return self.current_object
 
     def on_forward_propagation(self):
         if self.propagating:
@@ -843,9 +875,11 @@ class App(QWidget):
         self.brush_vis_map.fill(0)
         self.brush_vis_alpha.fill(0)
 
-    def vis_brush(self, ex, ey):
+    def vis_brush(self, ex, ey, obj=None):
+        if obj is None:
+            obj = 0 if self._is_clean_mode() else self.current_object
         self.brush_vis_map = cv2.circle(self.brush_vis_map, 
-                (int(round(ex)), int(round(ey))), self.brush_size//2+1, color_map[self.current_object], thickness=-1)
+                (int(round(ex)), int(round(ey))), self.brush_size//2+1, color_map[obj], thickness=-1)
         self.brush_vis_alpha = cv2.circle(self.brush_vis_alpha, 
                 (int(round(ex)), int(round(ey))), self.brush_size//2+1, 0.5, thickness=-1)
 
@@ -879,12 +913,12 @@ class App(QWidget):
 
         last_interaction = self.interaction
         new_interaction = None
-        if self.curr_interaction == 'Scribble':
+        if self._is_scribble_mode():
             if last_interaction is None or type(last_interaction) != ScribbleInteraction:
                 self.complete_interaction()
                 new_interaction = ScribbleInteraction(image, torch.from_numpy(self.current_mask).float().to(self.device), 
                         (h, w), self.s2m_controller, self.num_objects)
-        elif self.curr_interaction == 'Free':
+        elif self._is_free_mode():
             if last_interaction is None or type(last_interaction) != FreeInteraction:
                 self.complete_interaction()
                 new_interaction = FreeInteraction(image, self.current_mask, (h, w), 
@@ -908,11 +942,12 @@ class App(QWidget):
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
         self.last_ex, self.last_ey = ex, ey
         self.clear_brush()
+        active_obj = self._get_active_object() if self.pressed else (0 if self._is_clean_mode() else self.current_object)
         # Visualize
-        self.vis_brush(ex, ey)
+        self.vis_brush(ex, ey, active_obj)
         if self.pressed:
-            if self.curr_interaction == 'Scribble' or self.curr_interaction == 'Free':
-                obj = 0 if self.right_click else self.current_object
+            if self._is_scribble_mode() or self._is_free_mode():
+                obj = self._get_active_object()
                 self.vis_map, self.vis_alpha = self.interaction.push_point(
                     ex, ey, obj, (self.vis_map, self.vis_alpha)
                 )
@@ -941,10 +976,10 @@ class App(QWidget):
         self.console_push_text('%s interaction at frame %d.' % (self.curr_interaction, self.cursur))
         interaction = self.interaction
 
-        if self.curr_interaction == 'Scribble' or self.curr_interaction == 'Free':
+        if self._is_scribble_mode() or self._is_free_mode():
             self.on_mouse_motion(event)
             interaction.end_path()
-            if self.curr_interaction == 'Free':
+            if self._is_free_mode():
                 self.clear_visualization()
         elif self.curr_interaction == 'Click':
             ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
@@ -959,7 +994,7 @@ class App(QWidget):
 
     def wheelEvent(self, event):
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
-        if self.curr_interaction == 'Free':
+        if self._is_free_mode():
             self.brush_slider.setValue(self.brush_slider.value() + event.angleDelta().y()//30)
         self.clear_brush()
         self.vis_brush(ex, ey)
